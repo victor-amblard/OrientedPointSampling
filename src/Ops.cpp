@@ -87,59 +87,19 @@ Eigen::Vector3f computeSVDNormal(const std::vector<int>& nnIdx,
 }
 //Implements Algorithm 1 from the paper
 std::pair<int, std::vector<int>> detectCloud(const pcl::PointCloudXYZ::Ptr cloud,
+                                            const std::vector<int>& samples,
+                                            const std::vector<Eigen::Vector3f>& allNormals,
+                                            const std::vector<int>& allOrientations,
                                             const bool ground,
-                                            const double alphaS,
-                                            const int K,
                                             const double threshDistPlane,
                                             const int threshInliers,
                                             const float threshAngle,
                                             const float p)
 {
-    Eigen::Vector3f verticalVector(0,0,1); //used for ground detection
-
     std::chrono::time_point<std::chrono::system_clock> tStart = std::chrono::system_clock::now();
 
     int Ncloud = cloud->points.size();
-    int Ns = (int)round(alphaS * Ncloud);
-    
-    //Kd-tree construction
-    pcl::KdTreeFLANN<pcl::PointXYZ> kdTree;
-    kdTree.setInputCloud(cloud);
-
-    std::vector<int> allPointsIdx(Ncloud);
-    for (int i = 0 ; i < Ncloud; ++i)
-        allPointsIdx.at(i) = i;
-
-    std::vector<int> ps;
-    std::vector<Eigen::Vector3f> psNormals;
-    std::vector<int> psLabels;
-    std::sample(allPointsIdx.begin(), allPointsIdx.end(),std::back_inserter(ps), Ns, std::mt19937{std::random_device{}()});
-
-    for (int idx : ps)
-    {
-        std::vector<int> idNN = getNearestNeighbors(idx, cloud, K, kdTree);
-        Eigen::Vector3f curNormal = computeSVDNormal(idNN, idx, cloud);
-        double angleToVerticalAxis = CLIP_ANGLE(std::acos(curNormal.dot(verticalVector)));
-        int orientationLabel;
-
-        if (angleToVerticalAxis < threshAngle)
-        {
-            orientationLabel = VERTICAL;
-        }
-        else
-        {
-            if (angleToVerticalAxis > M_PI/2 - threshAngle && angleToVerticalAxis < M_PI/2)
-            {
-                orientationLabel = HORIZONTAL;
-            }
-            else
-            {
-                orientationLabel = OTHER;
-            }
-        }
-        psLabels.push_back(orientationLabel);
-        psNormals.push_back(curNormal);
-    }
+    int Ns = allNormals.size();
 
     int iIter = 0;
     int nIter = Ncloud;
@@ -150,18 +110,18 @@ std::pair<int, std::vector<int>> detectCloud(const pcl::PointCloudXYZ::Ptr cloud
     while (iIter < nIter)
     {
         int randIdx = std::rand() % Ns;
-        idxOI = ps[randIdx];    
+        idxOI = samples[randIdx];    
         std::vector<int> inliers;
 
         for (int iPoint = 0 ; iPoint < Ns ; ++iPoint)
         {
-            if (iPoint != randIdx && ((ground && psLabels.at(iPoint) == VERTICAL) ||
-             (!ground && psLabels.at(iPoint) == HORIZONTAL)))
+            if (iPoint != randIdx && ((ground && allOrientations.at(iPoint) == VERTICAL) ||
+             (!ground)))
             {
-                double dist = getDistanceToPlane(idxOI, ps.at(iPoint), cloud, psNormals.at(randIdx));
+                double dist = getDistanceToPlane(idxOI, samples.at(iPoint), cloud, allNormals.at(randIdx));
                 if (dist < threshDistPlane)
                 {
-                    inliers.push_back(ps.at(iPoint));
+                    inliers.push_back(samples.at(iPoint));
                 }
             }
         }
@@ -221,6 +181,54 @@ void visualizePlanes(const std::vector<std::vector<pcl::PointXYZ>>& planes,
     };
 }
 
+std::pair<std::vector<Eigen::Vector3f>, std::vector<int>> computeAllNormals(const std::vector<int>& samples,
+                                                                            const int K,
+                                                                            const pcl::PointCloudXYZ::Ptr cloud,
+                                                                            const float threshAngle)
+{
+    Eigen::Vector3f verticalVector(0,0,1); //used for ground detection
+
+    //Kd-tree construction
+    pcl::KdTreeFLANN<pcl::PointXYZ> kdTree;
+    kdTree.setInputCloud(cloud);
+
+    std::vector<Eigen::Vector3f> allNormals;
+    std::vector<int> allOrientations;
+    allNormals.reserve(samples.size());
+    allOrientations.reserve(samples.size());
+
+    for (int idSampled: samples)
+    {
+        std::vector<int> idNN = getNearestNeighbors(idSampled, cloud, K, kdTree);
+        Eigen::Vector3f curNormal = computeSVDNormal(idNN, idSampled, cloud);
+
+
+        double angleToVerticalAxis = CLIP_ANGLE(std::acos(curNormal.dot(verticalVector)));
+        int orientationLabel;
+
+        if (angleToVerticalAxis < threshAngle)
+        {
+            orientationLabel = VERTICAL;
+        }
+        else
+        {
+            if (angleToVerticalAxis > M_PI/2 - threshAngle && angleToVerticalAxis < M_PI/2)
+            {
+                orientationLabel = HORIZONTAL;
+            }
+            else
+            {
+                orientationLabel = OTHER;
+            }
+        }
+    
+        allNormals.push_back(curNormal);
+        allOrientations.push_back(orientationLabel);
+    }
+
+    return std::make_pair(allNormals, allOrientations);
+}
+
 void process(const pcl::PointCloudXYZ::Ptr cloud,
             const int nbPlanes,
             const bool verbose,
@@ -251,12 +259,26 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
     std::pair<int, std::vector<int>> inliersPlane;
     pcl::PointCloudXYZ originalCloud(*cloud);
     int iIter = 0;
+
+    // Step 1: Draw samples
+    int Ncloud = cloud->points.size();
+    int Ns = (int)round(alphaS * Ncloud);
+    std::vector<int> ps;
+    std::vector<int> allPointsIdx(Ncloud);
+    for (int i = 0 ; i < Ncloud; ++i)
+        allPointsIdx.at(i) = i;
+
+    std::sample(allPointsIdx.begin(), allPointsIdx.end(),std::back_inserter(ps), Ns, std::mt19937{std::random_device{}()});
+
+    // Step 2: Compute normals
+    std::pair<std::vector<Eigen::Vector3f>, std::vector<int>> result = computeAllNormals(ps, K, cloud);
+    std::vector<Eigen::Vector3f> allNormals = result.first;
+    std::vector<int> allOrientations = result.second;
+    
+    // Step 3: Detect planes
     do
     {
-        if (iIter < 1)
-            inliersPlane = detectCloud(cloud, true, alphaS, K, 0.5, threshInliers, threshAngle, p); //ground detection
-        if (iIter >= 1)
-            inliersPlane = detectCloud(cloud, false, alphaS, K, threshDistPlane, threshInliers, threshAngle, p);
+        inliersPlane = detectCloud(cloud, ps, allNormals, allOrientations, false, threshDistPlane, threshInliers, threshAngle, p);
               
         Eigen::Vector3f planeNormal = computeSVDNormal(inliersPlane.second, inliersPlane.first , cloud);
             
@@ -286,7 +308,7 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
         std::vector<pcl::PointXYZ> curPlane;
         for (int idx: inliersPlane.second)
         {
-            curPlane.push_back(originalCloud.points[idx]);
+            curPlane.push_back(cloud->points[idx]);
         }
 
         planes.push_back(curPlane);
@@ -294,5 +316,9 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
 
     }while(iIter < nbPlanes);
     
+    // Step 4: Merge planes
+    //TODO 
+
+    // Step 5: Visualize result
     visualizePlanes(planes, cloud);
 }

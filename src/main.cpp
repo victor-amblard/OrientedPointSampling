@@ -12,7 +12,7 @@ int main(int argc, char * argv[])
     std::cerr << "Loading " << filename << std::endl;
     pcl::PointCloudXYZ::Ptr cloud(new pcl::PointCloudXYZ);
     int success = pcl::io::loadPCDFile<pcl::PointXYZ>(filename, *cloud);
-    if (success != -1)
+    if (success == -1)
     {
         std::cerr << "Failed to load point cloud! Exiting...";
         return 0;
