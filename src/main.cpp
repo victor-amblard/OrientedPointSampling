@@ -8,7 +8,6 @@ int main(int argc, char * argv[])
         return 0;
     }
     std::string filename = argv[1];
-    int nbPlanes = std::stoi(argv[2]);
     std::cerr << "Loading " << filename << std::endl;
     pcl::PointCloudXYZ::Ptr cloud(new pcl::PointCloudXYZ);
     int success = pcl::io::loadPCDFile<pcl::PointXYZ>(filename, *cloud);
@@ -18,5 +17,5 @@ int main(int argc, char * argv[])
         return 0;
     }
     std::cerr << "Point cloud has " << cloud->points.size() << " points " << std::endl;
-    process(cloud, nbPlanes);    
+    process(cloud);    
 }
