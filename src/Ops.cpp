@@ -60,9 +60,7 @@ Eigen::Vector3f computeGlobalSVD(const std::vector<pcl::PointXYZ>& allPoints)
     for (int i = 0 ; i < N ; ++i)
     {
         Eigen::Vector3d eigPoint = allPoints.at(i).getVector3fMap().cast<double>();
-        A(0,i) = eigPoint(0);
-        A(1,i) = eigPoint(1);
-        A(2,i) = eigPoint(2);
+        A.block(0,i,3,1) = eigPoint;
     }
 
     Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV | Eigen::ComputeFullU );
@@ -126,49 +124,56 @@ std::pair<int, std::set<int>> detectCloud(const pcl::PointCloudXYZ::Ptr cloud,
     std::chrono::time_point<std::chrono::system_clock> tStart = std::chrono::system_clock::now();
 
     int Ncloud = cloud->points.size();
-    int Ns = allNormals.size();
+    int Ns = samples.size();
 
     int iIter = 0;
     int nIter = Ncloud;
     int curMaxInliers = 0;
-    std::set<int> bestInliers;
+    std::set<int> bestInliers = {};
     int idxOI = -1;
     bool converged = true;
+    int maxIter = 3000;
+    size_t nInliers = 0;
 
     while (iIter < nIter)
     {
         int randIdx = std::rand() % Ns;
-        idxOI = samples.at(randIdx);    
+        idxOI = samples.at(randIdx); 
         std::set<int> inliers;
 
-        for (int iPoint = 0 ; iPoint < Ns ; ++iPoint)
+        if (ground || allOrientations.at(randIdx) == HORIZONTAL)
         {
-            if (iPoint != randIdx && ((ground && allOrientations.at(iPoint) == VERTICAL) ||
-             (!ground)))
+
+            for (int iPoint = 0 ; iPoint < Ns ; ++iPoint)
             {
-                double dist = getDistanceToPlane(idxOI, samples.at(iPoint), cloud, allNormals.at(randIdx));
-                if (dist < threshDistPlane)
+                if (iPoint != randIdx && CLIP_ANGLE(std::acos(allNormals.at(iPoint).dot(allNormals.at(randIdx)))) < threshAngle)
                 {
-                    inliers.insert(iPoint);
+                    double dist = getDistanceToPlane(idxOI, samples.at(iPoint), cloud, allNormals.at(randIdx));
+                    if (dist < threshDistPlane )
+                    {
+                        inliers.insert(iPoint); // 2 criteria : distance to plane and common orientation
+                    }
                 }
             }
-        }
 
-        size_t nInliers = inliers.size();
+            nInliers = inliers.size();
 
-        if (nInliers > threshInliers)
-        {
-            if (nInliers > curMaxInliers)
+            if (nInliers > threshInliers)
             {
-                curMaxInliers = nInliers;
-                bestInliers = inliers;
-                double e = 1 - (float)(nInliers) / Ns;
-                nIter = std::log(1 - p) / std::log(1- (1-e));
+                if (nInliers > curMaxInliers)
+                {
+                    curMaxInliers = nInliers;
+                    bestInliers = inliers;
+                    double e = 1 - (float)(nInliers) / Ns;
+                    nIter = std::log(1 - p) / std::log(1- (1-e));
 
+                }
             }
-        }
-        if (iIter > 1000){
-            converged = false;
+        }   
+        
+        if (iIter > maxIter){
+            if (curMaxInliers == 0) // To avoid waiting 1h until the end of the loop
+                converged = false;
             break;
         }
         ++iIter;
@@ -204,7 +209,7 @@ void visualizePlanes(const std::vector<Plane>& planes,
 
     viewer->addPointCloud<pcl::PointXYZRGB> (coloredCloud, "sample cloud");
 
-    viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "sample cloud");
+    viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "sample cloud");
     viewer->addCoordinateSystem (1.0);
     viewer->initCameraParameters ();
 
@@ -380,7 +385,8 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
         std::cerr << planes.size() << std::endl;
 
     }while(planes.size() != planesNumber);
-
+    
+    getFinitePlanes(planes, cloud);
     // Step 5: Visualize result
     visualizePlanes(planes, cloud);
 }
@@ -432,7 +438,8 @@ bool comparePlanes(const Plane& A,
 {
     float distA = getDistanceToPlane(A.second.second, B);
     float distB  = getDistanceToPlane(B.second.second, A);
-    float angle = std::acos(A.second.first.dot(B.second.first));
+    float angle = CLIP_ANGLE(std::acos(A.second.first.dot(B.second.first)));
 
     return (distA < defaultParams::threshDistToPlane) && (distB < defaultParams::threshDistToPlane) && (angle < defaultParams::threshAngleToAxis);
 }
+
