@@ -386,7 +386,6 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
 
     }while(planes.size() != planesNumber);
     
-    getFinitePlanes(planes, cloud);
     // Step 5: Visualize result
     visualizePlanes(planes, cloud);
 }
