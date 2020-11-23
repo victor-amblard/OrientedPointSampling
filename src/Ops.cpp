@@ -11,6 +11,8 @@
 #define HORIZONTAL 2
 #define OTHER 3
 
+const std::string orientationStr[4] = {"", "VERTICAL", "HORIZONTAL", "OTHER"};
+
 double CLIP_ANGLE(double angle){
     if (angle > M_PI)
         angle -= M_PI;
@@ -52,20 +54,21 @@ float getDistanceToPlane(const int id,
 
     return distance;
 }
-Eigen::Vector3f computeGlobalSVD(const std::vector<pcl::PointXYZ>& allPoints)
+Eigen::Vector3f computeGlobalSVD(const std::vector<pcl::PointXYZ>& allPoints,
+                                 const Eigen::Vector3f& centroid)
 {
     int N = allPoints.size();
     Eigen::MatrixXd A(3,N);
 
     for (int i = 0 ; i < N ; ++i)
     {
-        Eigen::Vector3d eigPoint = allPoints.at(i).getVector3fMap().cast<double>();
+        Eigen::Vector3d eigPoint = allPoints.at(i).getVector3fMap().cast<double>() - centroid.cast<double>();
         A.block(0,i,3,1) = eigPoint;
     }
 
     Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV | Eigen::ComputeFullU );
-    svd.computeV();
-    Eigen::Vector3d normal(svd.matrixV()(2,0), svd.matrixV()(2,1), svd.matrixV()(2,2)); 
+    svd.computeU();
+    Eigen::Vector3d normal(svd.matrixU()(2,0), svd.matrixU()(2,1), svd.matrixU()(2,2)); 
     return normal.cast<float>().normalized();
 
 }
@@ -119,7 +122,8 @@ std::pair<int, std::set<int>> detectCloud(const pcl::PointCloudXYZ::Ptr cloud,
                                             const double threshDistPlane,
                                             const int threshInliers,
                                             const float threshAngle,
-                                            const float p)
+                                            const float p,
+                                            const int defaultOrientation)
 {
     std::chrono::time_point<std::chrono::system_clock> tStart = std::chrono::system_clock::now();
 
@@ -134,14 +138,14 @@ std::pair<int, std::set<int>> detectCloud(const pcl::PointCloudXYZ::Ptr cloud,
     bool converged = true;
     int maxIter = 3000;
     size_t nInliers = 0;
-
+    
     while (iIter < nIter)
     {
         int randIdx = std::rand() % Ns;
         idxOI = samples.at(randIdx); 
         std::set<int> inliers;
 
-        if (ground || allOrientations.at(randIdx) == HORIZONTAL)
+        if (allOrientations.at(randIdx) == defaultOrientation)
         {
 
             for (int iPoint = 0 ; iPoint < Ns ; ++iPoint)
@@ -201,7 +205,7 @@ void visualizePlanes(const std::vector<Plane>& planes,
     {
         for (pcl::PointXYZ point : plane.first)
         {
-            coloredCloud->points.push_back(pcl::PointXYZRGB(point.x, point.y, point.z, r[(i*43)%255]*255, g[(i*43)%255]*255, b[(i*43)%255]*255));
+            coloredCloud->points.push_back(pcl::PointXYZRGB(point.x, point.y, point.z, r[(i*61)%255]*255, g[(i*61)%255]*255, b[(i*61)%255]*255));
         }
         ++i;
     }
@@ -224,7 +228,6 @@ std::pair<std::vector<Eigen::Vector3f>, std::vector<int>> computeAllNormals(cons
                                                                             const pcl::PointCloudXYZ::Ptr cloud,
                                                                             const float threshAngle)
 {
-    Eigen::Vector3f verticalVector(0,0,1); //used for ground detection
 
     //Kd-tree construction
     pcl::KdTreeFLANN<pcl::PointXYZ> kdTree;
@@ -241,7 +244,7 @@ std::pair<std::vector<Eigen::Vector3f>, std::vector<int>> computeAllNormals(cons
         Eigen::Vector3f curNormal = computeSVDNormal(idNN, idSampled, cloud);
 
 
-        double angleToVerticalAxis = CLIP_ANGLE(std::acos(curNormal.dot(verticalVector)));
+        double angleToVerticalAxis = CLIP_ANGLE(std::acos(curNormal.dot(defaultParams::groundOrientation)));
         int orientationLabel;
 
         if (angleToVerticalAxis < threshAngle)
@@ -314,9 +317,30 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
     
     // Step 3: Detect planes
 
+    int defaultOrientation;
+    bool stop[3] = {false, false, false}; 
     do
     {
-        inliersPlane = detectCloud(cloud, ps, allNormals, allOrientations, false, threshDistPlane, threshInliers, threshAngle, p);
+        
+        if (iIter%3 == 0 )
+        {
+            if (stop[0])
+                continue;
+            defaultOrientation = HORIZONTAL;
+        }
+        if (iIter%3 == 1)
+        {
+            if (stop[1])
+                continue;
+            defaultOrientation = VERTICAL;
+        }
+        if (iIter%3 == 2)
+        {
+            if (stop[2])
+                continue;
+            defaultOrientation = OTHER;
+        }
+        inliersPlane = detectCloud(cloud, ps, allNormals, allOrientations, false, threshDistPlane, threshInliers, threshAngle, p, defaultOrientation);
                           
         // Remove inliers from cloud
         pcl::ExtractIndices<pcl::PointXYZ> extractIndices;
@@ -345,7 +369,7 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
 
         for (int i = 0 ; i < Ns ; ++i)
         {
-            if (inliersPlane.second.find(i) == inliersPlane.second.end())
+            if (inliersPlane.second.find(i) == inliersPlane.second.end()) // current point not in detected plane
             {
                 tmpPs.push_back(ps.at(i));
                 tmpNormals.push_back(allNormals.at(i));
@@ -357,32 +381,31 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
         ps = tmpPs;
          
         Ns = ps.size();
-        Eigen::Vector3f planeNormal = computeGlobalSVD(curPlane);
+        Eigen::Vector3f planeNormal = computeGlobalSVD(curPlane, centroid);
         planes.push_back(std::make_pair(curPlane, std::make_pair(planeNormal, centroid)));
 
         if (verbose)
         {
             std::cerr << "[INFO] Plane normal: (" << planeNormal(0) <<" ;" << planeNormal(1) << " ; " << planeNormal(2) << ")" << std::endl;
             std::cerr << "       Centroid: (" << centroid(0) << ";" << centroid(1) << ";" << centroid(2) << ")" << std::endl;
+            std::cerr << "       Orientation: " <<  orientationStr[defaultOrientation] << std::endl;
         }
 
+        if (ps.size() < threshInliers)
+            stop[iIter%3] = true;
+        
         ++iIter;
-        /*
-        extractIndices.setInputCloud(cloud);
-        extractIndices.setIndices(inliers);
-        extractIndices.setNegative(true);
-        extractIndices.filter(*cloud);*/
 
-    }while(ps.size() > threshInliers);
+    }while(!stop[0] || !stop[1] || !stop[2]);
     
     // Step 4: Merge planes
     size_t planesNumber;
     
     do
     {
+        std::cerr << planes.size() << std::endl;
         planesNumber = planes.size();
         mergePlanes(planes);
-        std::cerr << planes.size() << std::endl;
 
     }while(planes.size() != planesNumber);
     
@@ -392,6 +415,8 @@ void process(const pcl::PointCloudXYZ::Ptr cloud,
 
 void mergePlanes(std::vector<Plane>& planes)
 {
+    bool out = false;
+
     for (auto itA = planes.begin() ; itA != planes.end();)
     {
         for (auto itB = itA; itB != planes.end() ;)
@@ -411,10 +436,10 @@ void mergePlanes(std::vector<Plane>& planes)
                         itB->first.push_back(elem);
                     
                     Eigen::Vector3f nCentroid = 1 / (nA+nB) * (nA * itA->second.second + nB * itB->second.second); //updated centroid
-                    Eigen::Vector3f nNormal = computeGlobalSVD(itB->first); //Recompute normals with all inliers
+                    Eigen::Vector3f nNormal = computeGlobalSVD(itB->first, nCentroid); //Recompute normals with all inliers
                     itB->second.first = nNormal;
                     itB->second.second = nCentroid;
-                    
+                    out = true;
                     itA = planes.erase(itA);
 
                     break;
@@ -428,7 +453,10 @@ void mergePlanes(std::vector<Plane>& planes)
                 ++itB;
             }
         }
-        ++itA;
+        if (!out)
+            ++itA;
+        else
+            out = false;
     }
 }
 

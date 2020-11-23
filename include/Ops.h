@@ -23,12 +23,13 @@ namespace pcl{
 using Plane = std::pair<std::vector<pcl::PointXYZ>, std::pair<Eigen::Vector3f, Eigen::Vector3f>>; //(inliers, (normal, centroid))
 
 namespace defaultParams{
-    const double samplingRate = 0.01;
+    const double samplingRate = 0.03;
     const int KNN = 30;
-    const double threshDistToPlane = 0.1; //meters
+    const double threshDistToPlane = 0.05; //meters
     const float pRansacAdaptive = 0.99;
     const int minInliersOnPlane = 100;
-    const float threshAngleToAxis = 7 * M_PI/180; //radians
+    const float threshAngleToAxis = 15 * M_PI/180; //radians
+    const Eigen::Vector3f groundOrientation = Eigen::Vector3f(0,1,0);
 }
 std::pair<int, std::set<int>> detectCloud(const pcl::PointCloudXYZ::Ptr cloud,
                                             const std::vector<int>& samples, 
@@ -38,7 +39,8 @@ std::pair<int, std::set<int>> detectCloud(const pcl::PointCloudXYZ::Ptr cloud,
                                             const double threshDistPlane,
                                             const int threshInliers,
                                             const float threshAngle,
-                                            const float p);
+                                            const float p,
+                                            const int orientation);
 
 void process(const pcl::PointCloudXYZ::Ptr cloud,
             const bool verbose = true,
